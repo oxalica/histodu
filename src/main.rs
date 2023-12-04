@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::CString;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::{fmt, process};
 
 use bytesize::ByteSize;
@@ -93,7 +93,7 @@ scoped_tls::scoped_thread_local!(static WORKER: RefCell<Worker>);
 struct Worker {
     uring: IoUring,
     bufs: [Statx; IO_URING_ENTRIES],
-    params: [Option<(Arc<OwnedFd>, CString)>; IO_URING_ENTRIES],
+    params: [Option<(RawFd, CString)>; IO_URING_ENTRIES],
     active_mask: u64,
     recorder: hdrhistogram::sync::Recorder<u64>,
     include_empty: bool,
@@ -112,7 +112,7 @@ impl Drop for Worker {
 
 impl Worker {
     fn new(recorder: hdrhistogram::sync::Recorder<u64>, include_empty: bool) -> Self {
-        const NONE: Option<(Arc<OwnedFd>, CString)> = None; // Workaround of const blocks.
+        const NONE: Option<(RawFd, CString)> = None; // Workaround of const blocks.
         let uring = IoUring::new(IO_URING_ENTRIES.try_into().unwrap()).unwrap();
         Self {
             uring,
@@ -125,7 +125,9 @@ impl Worker {
         }
     }
 
-    fn enqueue(&mut self, dirfd: Arc<OwnedFd>, ent: RawDirEntry<'_>, s: &Scope<'_>) {
+    // # Safety
+    // `dirfd` must be valid until the operation finished.
+    unsafe fn enqueue(&mut self, dirfd: RawFd, ent: RawDirEntry<'_>, s: &Scope<'_>) {
         if ent.file_name() == cstr!(".") || ent.file_name() == cstr!("..") {
             return;
         }
@@ -142,9 +144,8 @@ impl Worker {
         self.active_mask |= 1 << buf_idx;
 
         // Take ownership of parameters.
-        let (dirfd, filename) =
-            self.params[buf_idx].insert((dirfd.clone(), ent.file_name().to_owned()));
-        let dirfd = Fd(dirfd.as_raw_fd());
+        let (_, filename) = self.params[buf_idx].insert((dirfd, ent.file_name().to_owned()));
+        let dirfd = Fd(dirfd);
         let filename = filename.as_ptr();
 
         let op = if ent.file_type() != FileType::Directory {
@@ -191,7 +192,6 @@ impl Worker {
                 } else {
                     // Directory `openat`.
                     let fd = unsafe { OwnedFd::from_raw_fd(ent.result()) };
-                    let fd = Arc::new(fd);
                     s.spawn(move |s| WORKER.with(|w| w.borrow_mut().traverse_dir(fd, s)));
                 }
             } else {
@@ -210,7 +210,18 @@ impl Worker {
         }
     }
 
-    fn traverse_dir(&mut self, dirfd: Arc<OwnedFd>, s: &Scope<'_>) {
+    fn traverse_dir(&mut self, dirfd: OwnedFd, s: &Scope<'_>) {
+        struct AbortOnPanic;
+        impl Drop for AbortOnPanic {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    eprintln!("panicking breaks safety invariants, aborting");
+                    std::process::abort();
+                }
+            }
+        }
+        let _abort_on_panic = AbortOnPanic;
+
         // FIXME: one-file-system
         let mut dirent_buf = std::mem::take(&mut self.dirent_buf);
         'done: loop {
@@ -225,10 +236,16 @@ impl Worker {
                             break 'done;
                         }
                     };
-                    self.enqueue(dirfd.clone(), entry, s);
+                    // SAFETY: Task completion is enforce below before dropping `dirfd`.
+                    unsafe {
+                        self.enqueue(dirfd.as_raw_fd(), entry, s);
+                    }
                     while !iter.is_buffer_empty() {
                         let entry = iter.next().unwrap().unwrap();
-                        self.enqueue(dirfd.clone(), entry, s);
+                        // SAFETY: Task completion is enforce below before dropping `dirfd`.
+                        unsafe {
+                            self.enqueue(dirfd.as_raw_fd(), entry, s);
+                        }
                     }
                     self.uring.submit().unwrap();
                 }
@@ -238,12 +255,12 @@ impl Worker {
         }
 
         self.dirent_buf = dirent_buf;
-        self.finish(s);
-    }
 
-    fn finish(&mut self, s: &Scope<'_>) {
+        // Force task completion.
         let pendings = self.active_mask.count_ones() as usize;
-        self.submit_and_complete(pendings, s);
+        if pendings != 0 {
+            self.submit_and_complete(pendings, s);
+        }
     }
 }
 
@@ -270,7 +287,7 @@ fn main() {
                 WORKER.set(&w, || thread.run());
             },
             |pool| {
-                pool.scope(|s| WORKER.with(|w| w.borrow_mut().traverse_dir(Arc::new(rootfd), s)));
+                pool.scope(|s| WORKER.with(|w| w.borrow_mut().traverse_dir(rootfd, s)));
             },
         )
         .unwrap();
