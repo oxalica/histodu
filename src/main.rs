@@ -11,7 +11,6 @@ use hdrhistogram::Histogram;
 use io_uring::types::Fd;
 use io_uring::{opcode, IoUring, SubmissionQueue};
 use miniserde::Serialize;
-use walkdir::WalkDir;
 
 #[derive(Debug, clap::Parser)]
 #[command(version, about)]
@@ -180,8 +179,12 @@ impl Worker {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let mut hist = Histogram::<u64>::new(3).unwrap().into_sync();
+
+    if cli.follow_root {
+        cli.root = std::fs::canonicalize(cli.root).unwrap();
+    }
 
     thread::scope(|scope| {
         let (file_tx, file_rx) = crossbeam::channel::unbounded::<PathBuf>();
@@ -193,27 +196,31 @@ fn main() {
             scope.spawn(|| Worker::work(recorder, file_rx, cli.include_empty));
         }
 
-        for ent in WalkDir::new(cli.root)
-            .follow_links(false)
-            .follow_root_links(cli.follow_root)
-            .same_file_system(cli.one_file_system)
-        {
-            let ent = match ent {
-                Ok(ent) => ent,
-                Err(err) => {
-                    match err.path() {
-                        Some(path) => eprintln!("fail to traverse {}: {}", path.display(), err),
-                        None => eprintln!("fail to traverse: {err}"),
+        fn spawn_traverse(
+            s: &rayon::Scope,
+            path: PathBuf,
+            file_tx: crossbeam::channel::Sender<PathBuf>,
+        ) {
+            s.spawn(move |s| {
+                // FIXME: one-file-system
+                for ent in std::fs::read_dir(&path).unwrap() {
+                    let ent = match ent {
+                        Ok(ent) => ent,
+                        Err(err) => {
+                            eprintln!("fail to traverse {}: {}", path.display(), err);
+                            continue;
+                        }
+                    };
+                    let file_path = ent.path();
+                    if !ent.file_type().unwrap().is_dir() {
+                        file_tx.send(file_path).unwrap();
+                    } else {
+                        spawn_traverse(s, file_path, file_tx.clone());
                     }
-                    continue;
                 }
-            };
-            if !cli.include_dir && ent.file_type().is_dir() {
-                continue;
-            }
-
-            file_tx.send(ent.into_path()).unwrap();
+            });
         }
+        rayon::scope(|s| spawn_traverse(s, cli.root.clone(), file_tx));
     });
 
     hist.refresh();
