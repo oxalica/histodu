@@ -122,7 +122,11 @@ impl Drop for Worker {
 impl Worker {
     fn new(recorder: hdrhistogram::sync::Recorder<u64>, include_empty: bool) -> Self {
         const NONE: Option<(RawFd, CString)> = None; // Workaround of const blocks.
-        let uring = IoUring::new(IO_URING_ENTRIES.try_into().unwrap()).unwrap();
+        let uring = IoUring::builder()
+            .dontfork()
+            .setup_single_issuer()
+            .build(IO_URING_ENTRIES.try_into().unwrap())
+            .expect("failed to create io-uring");
         Self {
             uring,
             bufs: [unsafe { std::mem::zeroed() }; IO_URING_ENTRIES],
