@@ -1,0 +1,11 @@
+[package]
+name = "filestat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytesize = "1"
+clap = { version = "4", features = ["derive"] }
+hdrhistogram = "7"
+miniserde = "0.1"
+walkdir = "2"
