@@ -1,12 +1,10 @@
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use bytesize::ByteSize;
 use clap::Parser;
-use hdrhistogram::sync::Recorder;
-use hdrhistogram::Histogram;
 use miniserde::Serialize;
 
 #[derive(Debug, clap::Parser)]
@@ -69,54 +67,17 @@ impl fmt::Display for Output {
 fn main() {
     let cli = Cli::parse();
 
-    let mut hist = Histogram::<u64>::new(3).unwrap().into_sync();
-
-    scoped_tls::scoped_thread_local!(static LOCAL_RECORDER: RefCell<Recorder<u64>>);
-
-    fn traverse(s: &rayon::Scope, path: PathBuf, include_empty: bool) {
-        for ent in std::fs::read_dir(&path).unwrap() {
-            let ent = match ent {
-                Ok(ent) => ent,
-                Err(err) => {
-                    eprintln!("fail to traverse {}: {}", path.display(), err);
-                    continue;
-                }
-            };
-            if !ent.file_type().unwrap().is_dir() {
-                s.spawn(move |_s| {
-                    let sz = ent.metadata().unwrap().len();
-                    if include_empty || sz != 0 {
-                        LOCAL_RECORDER.with(|recorder| {
-                            recorder.borrow_mut().record(sz).unwrap();
-                        });
-                    }
-                })
-            } else {
-                let file_path = ent.path();
-                s.spawn(move |s| traverse(s, file_path, include_empty));
-            }
-        }
-    }
-
-    let threads = if cli.threads != 0 {
-        cli.threads
-    } else {
-        std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .saturating_mul(2)
+    let config = filestat::Config {
+        include_empty: cli.include_empty,
+        threads: NonZeroUsize::new(cli.threads).unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .expect("failed to get available parallelism")
+                .saturating_mul(NonZeroUsize::new(2).expect("2 is not zero"))
+        }),
+        on_error: &|path, err| eprintln!("{}: {}", path.display(), err),
     };
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build_scoped(
-            |thread| {
-                let recorder = RefCell::new(hist.recorder());
-                LOCAL_RECORDER.set(&recorder, || thread.run());
-            },
-            |pool| pool.scope(|s| traverse(s, cli.root.clone(), cli.include_empty)),
-        )
-        .unwrap();
 
-    hist.refresh();
+    let hist = filestat::traverse_dir_stat(&cli.root, &config);
 
     let out = Output {
         count: hist.len(),
