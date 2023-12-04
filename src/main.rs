@@ -13,7 +13,7 @@ use io_uring::{opcode, IoUring};
 use miniserde::Serialize;
 use rayon::Scope;
 use rustix::cstr;
-use rustix::fd::{AsRawFd, FromRawFd, OwnedFd};
+use rustix::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use rustix::fs::{
     openat, AtFlags, FileType, Mode, OFlags, RawDir, RawDirEntry, Statx, StatxFlags, CWD,
 };
@@ -95,6 +95,7 @@ struct Worker {
     bufs: [Statx; IO_URING_ENTRIES],
     params: [Option<(RawFd, CString)>; IO_URING_ENTRIES],
     active_mask: u64,
+    pending_close: usize,
     recorder: hdrhistogram::sync::Recorder<u64>,
     include_empty: bool,
     dirent_buf: Vec<u8>,
@@ -104,8 +105,16 @@ struct Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         if self.active_mask != 0 {
-            eprintln!("tasks still active: {:b}", self.active_mask);
-            std::process::abort();
+            let want = self.active_mask.count_ones() as usize;
+            self.uring.submit_and_wait(want).unwrap();
+            if let Some(ent) = self
+                .uring
+                .completion()
+                .find(|ent| ent.user_data() != IO_URING_ENTRIES as u64)
+            {
+                eprintln!("non-close tasks still active, got: {ent:?}");
+                std::process::abort();
+            }
         }
     }
 }
@@ -119,6 +128,7 @@ impl Worker {
             bufs: [unsafe { std::mem::zeroed() }; IO_URING_ENTRIES],
             params: [NONE; IO_URING_ENTRIES],
             active_mask: 0,
+            pending_close: 0,
             recorder,
             include_empty,
             dirent_buf: Vec::with_capacity(INIT_DIR_BUF_LEN),
@@ -134,7 +144,7 @@ impl Worker {
 
         // If full, flush and wait.
         if self.active_mask == BUF_MASK_ALL {
-            self.submit_and_complete(1, s);
+            self.submit_and_complete(1 + self.pending_close, s);
         }
 
         // Always allocate a buffer, even for directories, since we always need to keep
@@ -167,7 +177,8 @@ impl Worker {
                 .build()
                 .user_data(!(buf_idx as u64))
         };
-        unsafe {
+        if unsafe { self.uring.submission().push(&op) }.is_err() {
+            self.submit_and_complete(1, s);
             self.uring.submission().push(&op).unwrap();
         }
     }
@@ -176,6 +187,12 @@ impl Worker {
         self.uring.submit_and_wait(want).unwrap();
         for ent in self.uring.completion() {
             let data = ent.user_data() as i64;
+            if data == IO_URING_ENTRIES as i64 {
+                // Close.
+                self.pending_close -= 1;
+                continue;
+            }
+
             let buf_idx = if data >= 0 { data } else { !data } as usize;
             assert!(buf_idx < IO_URING_ENTRIES);
             self.active_mask ^= 1 << buf_idx;
@@ -257,9 +274,22 @@ impl Worker {
         self.dirent_buf = dirent_buf;
 
         // Force task completion.
-        let pendings = self.active_mask.count_ones() as usize;
+        let pendings = self.active_mask.count_ones() as usize + self.pending_close;
         if pendings != 0 {
             self.submit_and_complete(pendings, s);
+        }
+
+        debug_assert_eq!(self.active_mask, 0);
+        debug_assert_eq!(self.pending_close, 0);
+
+        // Enqueue closing, but delay submission.
+        let raw_dirfd = dirfd.into_raw_fd();
+        let op = opcode::Close::new(Fd(raw_dirfd))
+            .build()
+            .user_data(IO_URING_ENTRIES as u64);
+        self.pending_close += 1;
+        unsafe {
+            self.uring.submission().push(&op).unwrap();
         }
     }
 }
