@@ -1,15 +1,15 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::CString;
+use std::fmt;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::{fmt, thread};
 
 use bytesize::ByteSize;
 use clap::Parser;
-use crossbeam::channel::Receiver;
 use hdrhistogram::Histogram;
 use io_uring::types::Fd;
-use io_uring::{opcode, IoUring, SubmissionQueue};
+use io_uring::{opcode, IoUring};
 use miniserde::Serialize;
 
 #[derive(Debug, clap::Parser)]
@@ -80,6 +80,7 @@ impl fmt::Display for Output {
 const IO_URING_ENTRIES: usize = 32;
 
 struct Worker {
+    uring: IoUring,
     bufs: [libc::statx; IO_URING_ENTRIES],
     paths: [Option<CString>; IO_URING_ENTRIES],
     active_mask: u64,
@@ -87,10 +88,24 @@ struct Worker {
     include_empty: bool,
 }
 
+// Pending operations must be completed before dropping the buffer.
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let ongoing_cnt = self.active_mask.count_ones() as usize;
+        if ongoing_cnt > 0 {
+            self.uring.submit_and_wait(ongoing_cnt).unwrap();
+            self.handle_completed();
+        }
+        assert_eq!(self.active_mask, 0);
+    }
+}
+
 impl Worker {
     fn new(recorder: hdrhistogram::sync::Recorder<u64>, include_empty: bool) -> Self {
         const NONE: Option<CString> = None; // Workaround of const blocks.
+        let uring = IoUring::new(IO_URING_ENTRIES.try_into().unwrap()).unwrap();
         Self {
+            uring,
             bufs: [unsafe { std::mem::zeroed() }; IO_URING_ENTRIES],
             paths: [NONE; IO_URING_ENTRIES],
             active_mask: 0,
@@ -99,34 +114,41 @@ impl Worker {
         }
     }
 
-    fn submit_one(&mut self, sub: &mut SubmissionQueue, path: PathBuf) -> bool {
-        let buf_idx = self.active_mask.trailing_ones() as usize;
-        assert!(buf_idx < IO_URING_ENTRIES);
-        self.active_mask |= 1 << buf_idx;
+    fn submit(&mut self, path: PathBuf) {
+        {
+            let mut sub = self.uring.submission();
 
-        let mut path = path.into_os_string().into_vec();
-        path.push(b'\0');
-        let path = CString::from_vec_with_nul(path).unwrap();
+            let buf_idx = self.active_mask.trailing_ones() as usize;
+            assert!(buf_idx < IO_URING_ENTRIES);
+            self.active_mask |= 1 << buf_idx;
 
-        let dirfd = Fd(libc::AT_FDCWD);
-        let pathname = path.as_c_str().as_ptr();
-        let buf = &mut self.bufs[buf_idx];
-        buf.stx_mask = libc::STATX_SIZE;
-        self.paths[buf_idx] = Some(path); // Keep the pathname string alive.
-        unsafe {
-            let op = &opcode::Statx::new(dirfd, pathname, (buf as *mut libc::statx).cast())
-                .flags(libc::AT_SYMLINK_NOFOLLOW)
-                .build()
-                .user_data(buf_idx as u64);
-            sub.push(op).unwrap();
+            let mut path = path.into_os_string().into_vec();
+            path.push(b'\0');
+            let path = CString::from_vec_with_nul(path).unwrap();
+
+            let dirfd = Fd(libc::AT_FDCWD);
+            let pathname = path.as_c_str().as_ptr();
+            let buf = &mut self.bufs[buf_idx];
+            buf.stx_mask = libc::STATX_SIZE;
+            self.paths[buf_idx] = Some(path); // Keep the pathname string alive.
+            unsafe {
+                let op = &opcode::Statx::new(dirfd, pathname, (buf as *mut libc::statx).cast())
+                    .flags(libc::AT_SYMLINK_NOFOLLOW)
+                    .build()
+                    .user_data(buf_idx as u64);
+                sub.push(op).unwrap();
+            }
         }
 
-        self.active_mask == (1 << IO_URING_ENTRIES) - 1
+        let is_full = self.active_mask == (1 << IO_URING_ENTRIES) - 1;
+        self.uring
+            .submit_and_wait(if is_full { 1 } else { 0 })
+            .unwrap();
+        self.handle_completed();
     }
 
-    fn handle_completed(&mut self, uring: &mut IoUring) {
-        let compe = uring.completion();
-        for ent in compe {
+    fn handle_completed(&mut self) {
+        for ent in self.uring.completion() {
             let buf_idx = ent.user_data() as usize;
             assert!(buf_idx < IO_URING_ENTRIES);
             self.active_mask ^= 1 << buf_idx;
@@ -146,37 +168,6 @@ impl Worker {
             }
         }
     }
-
-    fn work(
-        recorder: hdrhistogram::sync::Recorder<u64>,
-        file_rx: Receiver<PathBuf>,
-        include_empty: bool,
-    ) {
-        let mut uring = IoUring::new(IO_URING_ENTRIES.try_into().unwrap()).unwrap();
-        let mut state = Self::new(recorder, include_empty);
-
-        while let Ok(path) = file_rx.recv() {
-            let mut sub = uring.submission();
-            let mut is_full = state.submit_one(&mut sub, path);
-            while !is_full {
-                if let Ok(path) = file_rx.try_recv() {
-                    is_full = state.submit_one(&mut sub, path);
-                } else {
-                    break;
-                }
-            }
-            drop(sub);
-            uring.submit_and_wait(if is_full { 1 } else { 0 }).unwrap();
-            state.handle_completed(&mut uring);
-        }
-
-        let ongoing_cnt = state.active_mask.count_ones() as usize;
-        if ongoing_cnt > 0 {
-            uring.submit_and_wait(ongoing_cnt).unwrap();
-            state.handle_completed(&mut uring);
-        }
-        assert_eq!(state.active_mask, 0);
-    }
 }
 
 fn main() {
@@ -187,42 +178,40 @@ fn main() {
         cli.root = std::fs::canonicalize(cli.root).unwrap();
     }
 
-    thread::scope(|scope| {
-        let (file_tx, file_rx) = crossbeam::channel::unbounded::<PathBuf>();
+    scoped_tls::scoped_thread_local!(static WORKER: RefCell<Worker>);
 
-        let threads = thread::available_parallelism().map_or(1, |n| n.get());
-        for _ in 0..threads {
-            let recorder = hist.recorder();
-            let file_rx = file_rx.clone();
-            scope.spawn(|| Worker::work(recorder, file_rx, cli.include_empty));
-        }
-
-        fn spawn_traverse(
-            s: &rayon::Scope,
-            path: PathBuf,
-            file_tx: crossbeam::channel::Sender<PathBuf>,
-        ) {
-            s.spawn(move |s| {
-                // FIXME: one-file-system
-                for ent in std::fs::read_dir(&path).unwrap() {
-                    let ent = match ent {
-                        Ok(ent) => ent,
-                        Err(err) => {
-                            eprintln!("fail to traverse {}: {}", path.display(), err);
-                            continue;
-                        }
-                    };
-                    let file_path = ent.path();
-                    if !ent.file_type().unwrap().is_dir() {
-                        file_tx.send(file_path).unwrap();
-                    } else {
-                        spawn_traverse(s, file_path, file_tx.clone());
+    fn spawn_traverse(s: &rayon::Scope, path: PathBuf) {
+        s.spawn(move |s| {
+            // FIXME: one-file-system
+            for ent in std::fs::read_dir(&path).unwrap() {
+                let ent = match ent {
+                    Ok(ent) => ent,
+                    Err(err) => {
+                        eprintln!("fail to traverse {}: {}", path.display(), err);
+                        continue;
                     }
+                };
+                let file_path = ent.path();
+                if !ent.file_type().unwrap().is_dir() {
+                    WORKER.with(|w| w.borrow_mut().submit(file_path.clone()));
+                } else {
+                    spawn_traverse(s, file_path);
                 }
-            });
-        }
-        rayon::scope(|s| spawn_traverse(s, cli.root.clone(), file_tx));
-    });
+            }
+        });
+    }
+
+    rayon::ThreadPoolBuilder::new()
+        .build_scoped(
+            |thread| {
+                let w = RefCell::new(Worker::new(hist.recorder(), cli.include_empty));
+                WORKER.set(&w, || thread.run());
+            },
+            |pool| {
+                pool.scope(|s| spawn_traverse(s, cli.root.clone()));
+            },
+        )
+        .unwrap();
 
     hist.refresh();
 
