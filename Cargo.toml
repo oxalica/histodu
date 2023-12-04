@@ -8,9 +8,9 @@ bytesize = "1"
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"
 io-uring = "0.6"
-libc = "0.2"
 miniserde = "0.1"
 rayon = "1"
+rustix = { version = "0.38", features = ["fs"] }
 scoped-tls = "1"
 
 [profile.bench]
