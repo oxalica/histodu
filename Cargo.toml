@@ -12,3 +12,6 @@ io-uring = "0.6"
 libc = "0.2"
 miniserde = "0.1"
 rayon = "1"
+
+[profile.bench]
+debug = "line-tables-only"
