@@ -110,10 +110,11 @@ impl Worker {
 
         let dirfd = Fd(libc::AT_FDCWD);
         let pathname = path.as_c_str().as_ptr();
-        let buf = &mut self.bufs[buf_idx] as *mut libc::statx;
+        let buf = &mut self.bufs[buf_idx];
+        buf.stx_mask = libc::STATX_SIZE;
         self.paths[buf_idx] = Some(path); // Keep the pathname string alive.
         unsafe {
-            let op = &opcode::Statx::new(dirfd, pathname, buf.cast())
+            let op = &opcode::Statx::new(dirfd, pathname, (buf as *mut libc::statx).cast())
                 .flags(libc::AT_SYMLINK_NOFOLLOW)
                 .build()
                 .user_data(buf_idx as u64);
