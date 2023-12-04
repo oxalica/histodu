@@ -1,30 +1,18 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
 use bytesize::ByteSize;
 use clap::Parser;
+use hdrhistogram::sync::Recorder;
 use hdrhistogram::Histogram;
 use miniserde::Serialize;
-use walkdir::WalkDir;
 
 #[derive(Debug, clap::Parser)]
 #[command(version, about)]
 struct Cli {
-    /// Prevent traversing into other file systems.
-    #[arg(long)]
-    one_file_system: bool,
-
-    /// Follow the root path if it is a symlink.
-    /// Note that deep symlinks during traversal are never followed.
-    #[arg(long)]
-    follow_root: bool,
-
-    /// Include all directories.
-    #[arg(long)]
-    include_dir: bool,
-
-    /// Inlcude all zero-length files, or directories when `--include-dir` is enabled.
+    /// Include all zero-length files.
     #[arg(long)]
     include_empty: bool,
 
@@ -49,6 +37,11 @@ struct Cli {
 
     /// The root path to account.
     root: PathBuf,
+
+    /// The maximum concurrency. If set to zero, the effective value is
+    /// twice the number of logical CPUs.
+    #[arg(long, default_value = "0")]
+    threads: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,42 +68,55 @@ impl fmt::Display for Output {
 
 fn main() {
     let cli = Cli::parse();
-    let mut hist = Histogram::<u64>::new(3).unwrap();
-    for ent in WalkDir::new(cli.root)
-        .follow_links(false)
-        .follow_root_links(cli.follow_root)
-        .same_file_system(cli.one_file_system)
-    {
-        let ent = match ent {
-            Ok(ent) => ent,
-            Err(err) => {
-                match err.path() {
-                    Some(path) => eprintln!("fail to traverse {}: {}", path.display(), err),
-                    None => eprintln!("fail to traverse: {err}"),
+
+    let mut hist = Histogram::<u64>::new(3).unwrap().into_sync();
+
+    scoped_tls::scoped_thread_local!(static LOCAL_RECORDER: RefCell<Recorder<u64>>);
+
+    fn traverse(s: &rayon::Scope, path: PathBuf, include_empty: bool) {
+        for ent in std::fs::read_dir(&path).unwrap() {
+            let ent = match ent {
+                Ok(ent) => ent,
+                Err(err) => {
+                    eprintln!("fail to traverse {}: {}", path.display(), err);
+                    continue;
                 }
-                continue;
+            };
+            if !ent.file_type().unwrap().is_dir() {
+                s.spawn(move |_s| {
+                    let sz = ent.metadata().unwrap().len();
+                    if include_empty || sz != 0 {
+                        LOCAL_RECORDER.with(|recorder| {
+                            recorder.borrow_mut().record(sz).unwrap();
+                        });
+                    }
+                })
+            } else {
+                let file_path = ent.path();
+                s.spawn(move |s| traverse(s, file_path, include_empty));
             }
-        };
-        if !cli.include_dir && ent.file_type().is_dir() {
-            continue;
         }
-        let metadata = match ent.metadata() {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                eprintln!(
-                    "failed to get metadata of {}: {}",
-                    ent.path().display(),
-                    err
-                );
-                continue;
-            }
-        };
-        let size = metadata.len();
-        if !cli.include_empty && size == 0 {
-            continue;
-        }
-        hist.record(size).unwrap();
     }
+
+    let threads = if cli.threads != 0 {
+        cli.threads
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .saturating_mul(2)
+    };
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_scoped(
+            |thread| {
+                let recorder = RefCell::new(hist.recorder());
+                LOCAL_RECORDER.set(&recorder, || thread.run());
+            },
+            |pool| pool.scope(|s| traverse(s, cli.root.clone(), cli.include_empty)),
+        )
+        .unwrap();
+
+    hist.refresh();
 
     let out = Output {
         count: hist.len(),

@@ -8,4 +8,8 @@ bytesize = "1"
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"
 miniserde = "0.1"
-walkdir = "2"
+rayon = "1"
+scoped-tls = "1"
+
+[profile.bench]
+debug = "line-tables-only"
