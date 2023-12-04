@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 bytesize = "1"
 clap = { version = "4", features = ["derive"] }
+crossbeam = "0.8"
 hdrhistogram = "7"
+io-uring = "0.6"
+libc = "0.2"
 miniserde = "0.1"
 walkdir = "2"
