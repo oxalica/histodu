@@ -8,14 +8,15 @@ use std::{fmt, process};
 use bytesize::ByteSize;
 use clap::Parser;
 use hdrhistogram::Histogram;
-use io_uring::types::Fd;
+use io_uring::types::{Fd, OpenHow};
 use io_uring::{opcode, IoUring};
 use miniserde::Serialize;
 use rayon::Scope;
 use rustix::cstr;
 use rustix::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use rustix::fs::{
-    openat, AtFlags, FileType, Mode, OFlags, RawDir, RawDirEntry, Statx, StatxFlags, CWD,
+    openat, AtFlags, FileType, Mode, OFlags, RawDir, RawDirEntry, ResolveFlags, Statx, StatxFlags,
+    CWD,
 };
 use rustix::io::Errno;
 
@@ -23,7 +24,11 @@ use rustix::io::Errno;
 #[command(version, about)]
 struct Cli {
     /// Prevent traversing into other file systems.
-    #[arg(long)]
+    ///
+    /// This filter is based on `stx_mnt_id` field from stax(2), or `RESOLVE_NO_XDEV` flag of
+    /// openat2(2). Notably, it SKIPs bind-mount-ed file or directories, but does NOT skip BTRFS
+    /// subvolumes.
+    #[arg(long, short = 'x')]
     one_file_system: bool,
 
     /// Follow the root path if it is a symlink.
@@ -97,8 +102,10 @@ struct Worker {
     active_mask: u64,
     pending_close: usize,
     recorder: hdrhistogram::sync::Recorder<u64>,
-    include_empty: bool,
     dirent_buf: Vec<u8>,
+    include_empty: bool,
+    expect_mnt: Option<u64>,
+    dir_open_how: OpenHow,
 }
 
 // Pending operations must be completed before dropping the buffer.
@@ -120,13 +127,27 @@ impl Drop for Worker {
 }
 
 impl Worker {
-    fn new(recorder: hdrhistogram::sync::Recorder<u64>, include_empty: bool) -> Self {
+    fn new(
+        recorder: hdrhistogram::sync::Recorder<u64>,
+        include_empty: bool,
+        expect_mnt: Option<u64>,
+    ) -> Self {
         const NONE: Option<(RawFd, CString)> = None; // Workaround of const blocks.
         let uring = IoUring::builder()
             .dontfork()
             .setup_single_issuer()
             .build(IO_URING_ENTRIES.try_into().unwrap())
             .expect("failed to create io-uring");
+        let dir_open_how = OpenHow::new()
+            .flags(
+                (OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW).bits()
+                    as u64,
+            )
+            .resolve(if expect_mnt.is_some() {
+                ResolveFlags::NO_XDEV.bits()
+            } else {
+                0
+            });
         Self {
             uring,
             bufs: [unsafe { std::mem::zeroed() }; IO_URING_ENTRIES],
@@ -134,8 +155,10 @@ impl Worker {
             active_mask: 0,
             pending_close: 0,
             recorder,
-            include_empty,
             dirent_buf: Vec::with_capacity(INIT_DIR_BUF_LEN),
+            include_empty,
+            expect_mnt,
+            dir_open_how,
         }
     }
 
@@ -172,12 +195,7 @@ impl Worker {
                 .user_data(buf_idx as u64)
         } else {
             // Directory.
-            opcode::OpenAt::new(dirfd, filename)
-                .flags(
-                    (OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW).bits()
-                        as _,
-                )
-                .mode(Mode::empty().bits())
+            opcode::OpenAt2::new(dirfd, filename, &self.dir_open_how)
                 .build()
                 .user_data(!(buf_idx as u64))
         };
@@ -206,9 +224,13 @@ impl Worker {
             if ent.result() >= 0 {
                 if data >= 0 {
                     // File `statx`.
-                    let sz = self.bufs[buf_idx].stx_size;
-                    if self.include_empty || sz != 0 {
-                        self.recorder.record(sz).unwrap();
+                    let meta = self.bufs[buf_idx];
+                    if (self.include_empty || meta.stx_size != 0)
+                        && self
+                            .expect_mnt
+                            .map_or(true, |expect| meta.stx_mnt_id == expect)
+                    {
+                        self.recorder.record(meta.stx_size).unwrap();
                     }
                 } else {
                     // Directory `openat`.
@@ -243,7 +265,6 @@ impl Worker {
         }
         let _abort_on_panic = AbortOnPanic;
 
-        // FIXME: one-file-system
         let mut dirent_buf = std::mem::take(&mut self.dirent_buf);
         'done: loop {
             'resize: {
@@ -314,10 +335,20 @@ fn main() {
         }
     };
 
+    let expect_mnt = cli.one_file_system.then(|| {
+        match rustix::fs::statx(&rootfd, "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID) {
+            Ok(statx) => statx.stx_mnt_id,
+            Err(err) => {
+                eprintln!("failed to get mnt id of {}: {}", cli.root.display(), err);
+                process::exit(1);
+            }
+        }
+    });
+
     rayon::ThreadPoolBuilder::new()
         .build_scoped(
             |thread| {
-                let w = RefCell::new(Worker::new(hist.recorder(), cli.include_empty));
+                let w = RefCell::new(Worker::new(hist.recorder(), cli.include_empty, expect_mnt));
                 WORKER.set(&w, || thread.run());
             },
             |pool| {
