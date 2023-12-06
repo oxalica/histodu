@@ -14,7 +14,7 @@ struct Cli {
     #[arg(long)]
     include_empty: bool,
 
-    /// Print values at specific quantiles, instead of default [0%, 50%, 90%, 99%, 100%].
+    /// Print approximated values at specific quantiles.
     /// The value is given in integer percentage in range [0, 100].
     #[arg(
         long,
@@ -24,19 +24,19 @@ struct Cli {
     )]
     at_quantile: Vec<u8>,
 
-    /// Print quantiles below specific values, instead of default [4K, 64K, 1M].
-    /// The value is given in bytes.
-    #[arg(long, short = 'r', default_values = ["4096", "65536", "131072"])]
-    quantile_of: Vec<u64>,
+    /// Print approximated quantiles below specific values.
+    /// The value can be given as an integer in bytes, or with an SI or binary suffix.
+    #[arg(long, short = 'r', default_values = ["4KiB", "64KiB", "1MiB"])]
+    quantile_of: Vec<ByteSize>,
 
     /// Print output in JSON format.
     #[arg(long)]
     json: bool,
 
-    /// The root path to account.
-    root: PathBuf,
+    /// The root path to search.
+    root_path: PathBuf,
 
-    /// The maximum concurrency. If set to zero, the effective value is
+    /// The maximal concurrency. If set to zero, the effective value is
     /// twice the number of logical CPUs.
     #[arg(long, default_value = "0")]
     threads: usize,
@@ -53,12 +53,13 @@ struct Output {
 impl fmt::Display for Output {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "count = {}", self.count)?;
-        writeln!(f, "mean = {}", ByteSize(self.mean as u64))?;
+        let bytes = |b| ByteSize(b).to_string_as(true);
+        writeln!(f, "mean = {}", bytes(self.mean as u64))?;
         for (&percent, &sz) in &self.at_quantile {
             writeln!(f, "{}% = {}", percent, ByteSize(sz))?;
         }
         for (&size, &q) in &self.quantile_of {
-            writeln!(f, "{} = {}%", ByteSize(size), q * 100.0)?;
+            writeln!(f, "{} = {}%", bytes(size), q * 100.0)?;
         }
         Ok(())
     }
@@ -77,7 +78,7 @@ fn main() {
         on_error: &|path, err| eprintln!("{}: {}", path.display(), err),
     };
 
-    let hist = filestat::traverse_dir_stat(&cli.root, &config);
+    let hist = filestat::traverse_dir_stat(&cli.root_path, &config);
 
     let out = Output {
         count: hist.len(),
@@ -90,7 +91,8 @@ fn main() {
         quantile_of: cli
             .quantile_of
             .iter()
-            .map(|&size| (size, hist.quantile_below(size)))
+            .map(|&size| size.as_u64())
+            .map(|bytes| (bytes, hist.quantile_below(bytes)))
             .collect(),
     };
 
