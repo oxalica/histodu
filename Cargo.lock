@@ -191,18 +191,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a26ae43d7bcc3b814de94796a5e736d4029efb0ee900c12e2d54c993ad1a1e07"
 
 [[package]]
-name = "filestat"
-version = "0.1.0"
-dependencies = [
- "bytesize",
- "clap",
- "hdrhistogram",
- "miniserde",
- "rayon",
- "scoped-tls",
-]
-
-[[package]]
 name = "flate2"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -231,6 +219,18 @@ name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
+
+[[package]]
+name = "histodu"
+version = "0.1.0"
+dependencies = [
+ "bytesize",
+ "clap",
+ "hdrhistogram",
+ "miniserde",
+ "rayon",
+ "scoped-tls",
+]
 
 [[package]]
 name = "itoa"

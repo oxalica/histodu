@@ -68,7 +68,7 @@ impl fmt::Display for Output {
 fn main() {
     let cli = Cli::parse();
 
-    let config = filestat::Config {
+    let config = histodu::Config {
         include_empty: cli.include_empty,
         threads: NonZeroUsize::new(cli.threads).unwrap_or_else(|| {
             std::thread::available_parallelism()
@@ -78,7 +78,7 @@ fn main() {
         on_error: &|path, err| eprintln!("{}: {}", path.display(), err),
     };
 
-    let hist = filestat::traverse_dir_stat(&cli.root_path, &config);
+    let hist = histodu::traverse_dir_stat(&cli.root_path, &config);
 
     let out = Output {
         count: hist.len(),
