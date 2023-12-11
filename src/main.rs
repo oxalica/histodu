@@ -59,7 +59,7 @@ impl fmt::Display for Output {
             writeln!(f, "{}% = {}", percent, ByteSize(sz))?;
         }
         for (&size, &q) in &self.quantile_of {
-            writeln!(f, "{} = {}%", bytes(size), q * 100.0)?;
+            writeln!(f, "{:.3}% = {}", q * 100.0, bytes(size))?;
         }
         Ok(())
     }
