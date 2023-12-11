@@ -13,3 +13,7 @@ scoped-tls = "1"
 
 [profile.bench]
 debug = "line-tables-only"
+lto = true
+
+[profile.release]
+lto = true
