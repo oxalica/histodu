@@ -6,7 +6,7 @@ use bytesize::ByteSize;
 use u64 as ByteSize;
 
 #[derive(Debug, clap::Parser)]
-#[command(version, about)]
+#[command(about, version = option_env!("CFG_RELEASE").unwrap_or(env!("CARGO_PKG_VERSION")))]
 pub struct Cli {
     /// Include all zero-length files.
     #[arg(long)]
