@@ -31,7 +31,7 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
-    /// The root path to search.
+    /// The root directory to traverse.
     pub root_path: PathBuf,
 
     /// The maximal concurrency. If set to zero, the effective value is
