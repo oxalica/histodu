@@ -2,6 +2,11 @@
 name = "histodu"
 version = "0.1.0"
 edition = "2021"
+description = "Summarize distribution of file sizes"
+repository = "https://github.com/oxalica/histodu"
+license = "MIT OR Apache-2.0"
+categories = ["command-line-utilities"]
+keywords = ["tool", "filesystem", "sampling", "statistics"]
 
 [dependencies]
 bytesize = "1"
