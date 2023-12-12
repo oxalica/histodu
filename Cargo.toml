@@ -8,6 +8,10 @@ license = "MIT OR Apache-2.0"
 categories = ["command-line-utilities"]
 keywords = ["tool", "filesystem", "sampling", "statistics"]
 
+[features]
+default = ["completion"]
+completion = ["dep:clap", "dep:clap_complete"]
+
 [dependencies]
 bytesize = "1"
 clap = { version = "4", features = ["derive"] }
@@ -15,6 +19,10 @@ hdrhistogram = "7"
 miniserde = "0.1"
 rayon = "1"
 scoped-tls = "1"
+
+[build-dependencies]
+clap = { version = "4", features = ["derive"], optional = true }
+clap_complete = { version = "4", optional = true }
 
 [profile.bench]
 debug = "line-tables-only"

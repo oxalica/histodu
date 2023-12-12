@@ -1,46 +1,12 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 
 use bytesize::ByteSize;
 use clap::Parser;
 use miniserde::Serialize;
 
-#[derive(Debug, clap::Parser)]
-#[command(version, about)]
-struct Cli {
-    /// Include all zero-length files.
-    #[arg(long)]
-    include_empty: bool,
-
-    /// Print approximated values at specific quantiles.
-    /// The value is given in integer percentage in range [0, 100].
-    #[arg(
-        long,
-        short = 'q',
-        default_values = ["0", "50", "90", "99", "100"],
-        value_parser = clap::value_parser!(u8).range(0..=100)
-    )]
-    at_quantile: Vec<u8>,
-
-    /// Print approximated quantiles below specific values.
-    /// The value can be given as an integer in bytes, or with an SI or binary suffix.
-    #[arg(long, short = 'r', default_values = ["4KiB", "64KiB", "1MiB"])]
-    quantile_of: Vec<ByteSize>,
-
-    /// Print output in JSON format.
-    #[arg(long)]
-    json: bool,
-
-    /// The root path to search.
-    root_path: PathBuf,
-
-    /// The maximal concurrency. If set to zero, the effective value is
-    /// twice the number of logical CPUs.
-    #[arg(long, default_value = "0")]
-    threads: usize,
-}
+mod cli;
 
 #[derive(Debug, Serialize)]
 struct Output {
@@ -66,7 +32,7 @@ impl fmt::Display for Output {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = cli::Cli::parse();
 
     let config = histodu::Config {
         include_empty: cli.include_empty,

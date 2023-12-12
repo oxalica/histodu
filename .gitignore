@@ -1,4 +1,5 @@
 /target
+/completions
 
 flamegraph*.svg
 perf*.data*
