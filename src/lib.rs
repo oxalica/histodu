@@ -1,3 +1,5 @@
+//! WARNING: The library interface of this crate is considered unstable and
+//! should not be relied on. The crate version is solely coresponding to the binary CLI.
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -12,7 +14,7 @@ pub struct Config<'a> {
     pub on_error: &'a (dyn Fn(&Path, std::io::Error) + Sync),
 }
 
-pub fn traverse_dir_stat(root_path: &Path, config: &Config<'_>) -> SyncHistogram<u64> {
+pub fn dir_size_histogram(root_path: &Path, config: &Config<'_>) -> SyncHistogram<u64> {
     let mut hist = Histogram::new(3).expect("sigfig 3 is valid").into_sync();
     rayon::ThreadPoolBuilder::new()
         .num_threads(config.threads.get())
@@ -21,7 +23,7 @@ pub fn traverse_dir_stat(root_path: &Path, config: &Config<'_>) -> SyncHistogram
                 let recorder = RefCell::new(hist.recorder());
                 LOCAL_RECORDER.set(&recorder, || thread.run());
             },
-            |pool| pool.scope(|s| traverse(s, root_path, config)),
+            |pool| pool.scope(|s| traverse_dir(s, root_path, config)),
         )
         .expect("failed to build rayon runtime");
     // All recorders should already died.
@@ -31,7 +33,7 @@ pub fn traverse_dir_stat(root_path: &Path, config: &Config<'_>) -> SyncHistogram
 
 scoped_tls::scoped_thread_local!(static LOCAL_RECORDER: RefCell<Recorder<u64>>);
 
-fn traverse<'s>(s: &rayon::Scope<'s>, path: &Path, config: &'s Config<'s>) {
+fn traverse_dir<'s>(s: &rayon::Scope<'s>, path: &Path, config: &'s Config<'s>) {
     let emit = |err| (config.on_error)(path, err);
     let Ok(iter) = std::fs::read_dir(path).map_err(emit) else {
         return;
@@ -55,7 +57,7 @@ fn traverse<'s>(s: &rayon::Scope<'s>, path: &Path, config: &'s Config<'s>) {
                     }
                 } else {
                     let file_path = ent.path();
-                    s.spawn(move |s| traverse(s, &file_path, config));
+                    s.spawn(move |s| traverse_dir(s, &file_path, config));
                 }
                 Ok(())
             })();

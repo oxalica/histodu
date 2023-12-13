@@ -44,7 +44,7 @@ fn main() {
         on_error: &|path, err| eprintln!("{}: {}", path.display(), err),
     };
 
-    let hist = histodu::traverse_dir_stat(&cli.root_path, &config);
+    let hist = histodu::dir_size_histogram(&cli.root_path, &config);
 
     let out = Output {
         count: hist.len(),
