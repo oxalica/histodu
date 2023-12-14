@@ -3,6 +3,9 @@
 mod cli;
 
 fn main() {
+    // Do NOT rerun on src changes.
+    println!("cargo:rerun-if-changed=build.rs");
+
     #[cfg(feature = "completion")]
     {
         use clap::ValueEnum;
