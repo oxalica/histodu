@@ -1,7 +1,6 @@
-# histodu: Summarize distribution of file sizes.
+# histodu
 
-Want to know how many "small" files do you have? What's the typical file size?
-Take a quick look at the size distribution of your filesystems.
+Summarize file size distribution, quickly.
 
 ```console
 $ histodu /nix/store

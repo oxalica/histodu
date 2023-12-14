@@ -45,7 +45,7 @@ fn main() {
         on_error: &|path, err| eprintln!("{}: {}", path.display(), err),
     };
 
-    let hist = match histodu::dir_size_histogram(&cli.root_path, &config) {
+    let hist = match histodu::size_histogram(&cli.root_path, &config) {
         Ok(hist) => hist,
         // Errors should already be reported via `on_error`.
         Err(()) => std::process::exit(1),

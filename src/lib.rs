@@ -1,5 +1,5 @@
 //! WARNING: The library interface of this crate is considered unstable and
-//! should not be relied on. The crate version is solely coresponding to the binary CLI.
+//! should not be relied on. The crate version is solely corresponding to the binary CLI.
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -24,7 +24,7 @@ pub struct Config<'a> {
 /// Errors are reported via `Config::on_error`. In case of critical errors, it returns `Err(())`.
 /// Otherwise, errors are reported and relevant files are skipped.
 #[allow(clippy::result_unit_err)]
-pub fn dir_size_histogram(root_path: &Path, config: &Config<'_>) -> Result<SyncHistogram<u64>, ()> {
+pub fn size_histogram(root_path: &Path, config: &Config<'_>) -> Result<SyncHistogram<u64>, ()> {
     let emit = |err| (config.on_error)(root_path, err);
 
     let expect_dev_id = config

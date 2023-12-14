@@ -1,5 +1,5 @@
 rec {
-  description = "Summarize distribution of file sizes";
+  description = "Summarize file size distribution, quickly";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
