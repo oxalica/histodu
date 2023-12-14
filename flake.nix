@@ -26,6 +26,8 @@ rec {
 
         cargoLock.lockFile = ./Cargo.lock;
 
+        buildFeatures = [ "completion" ];
+
         CFG_RELEASE = "git-${rev}";
 
         nativeBuildInputs = [ pkgs.installShellFiles ];

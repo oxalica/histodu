@@ -9,7 +9,7 @@ categories = ["command-line-utilities"]
 keywords = ["tool", "filesystem", "sampling", "statistics"]
 
 [features]
-default = ["completion"]
+default = []
 completion = ["dep:clap", "dep:clap_complete"]
 
 [dependencies]
