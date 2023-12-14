@@ -35,6 +35,7 @@ fn main() {
     let cli = cli::Cli::parse();
 
     let config = histodu::Config {
+        one_file_system: cli.one_file_system,
         include_empty: cli.include_empty,
         threads: NonZeroUsize::new(cli.threads).unwrap_or_else(|| {
             std::thread::available_parallelism()
@@ -44,7 +45,11 @@ fn main() {
         on_error: &|path, err| eprintln!("{}: {}", path.display(), err),
     };
 
-    let hist = histodu::dir_size_histogram(&cli.root_path, &config);
+    let hist = match histodu::dir_size_histogram(&cli.root_path, &config) {
+        Ok(hist) => hist,
+        // Errors should already be reported via `on_error`.
+        Err(()) => std::process::exit(1),
+    };
 
     let out = Output {
         count: hist.len(),

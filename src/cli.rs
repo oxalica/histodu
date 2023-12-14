@@ -8,6 +8,11 @@ use u64 as ByteSize;
 #[derive(Debug, clap::Parser)]
 #[command(about, version = option_env!("CFG_RELEASE").unwrap_or(env!("CARGO_PKG_VERSION")))]
 pub struct Cli {
+    /// Do NOT count or descent into directories or files on a different file system than
+    /// the traversal root.
+    #[arg(long, short = 'x')]
+    pub one_file_system: bool,
+
     /// Include all zero-length files.
     #[arg(long)]
     pub include_empty: bool,
