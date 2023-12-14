@@ -7,6 +7,8 @@ repository = "https://github.com/oxalica/histodu"
 license = "MIT OR Apache-2.0"
 categories = ["command-line-utilities"]
 keywords = ["tool", "filesystem", "sampling", "statistics"]
+include = ["/src", "/LICENSE-*", "/README.md", "/build.rs"]
+rust-version = "1.70" # Bounded by `clap`.
 
 [features]
 default = []
@@ -25,7 +27,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 clap_complete = { version = "4", optional = true }
 
 [profile.bench]
-debug = "line-tables-only"
+debug = 1
 lto = true
 
 [profile.release]
