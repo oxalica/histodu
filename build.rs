@@ -4,7 +4,7 @@ mod cli;
 
 fn main() {
     // Do NOT rerun on src changes.
-    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=build.rs");
 
     #[cfg(feature = "completion")]
     {
@@ -23,5 +23,6 @@ fn main() {
         }
     }
 
-    println!("cargo:rustc-cfg=not_in_build_rs");
+    println!("cargo::rustc-check-cfg=cfg(not_in_build_rs)");
+    println!("cargo::rustc-cfg=not_in_build_rs");
 }

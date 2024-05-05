@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 categories = ["command-line-utilities"]
 keywords = ["tool", "filesystem", "sampling", "statistics"]
 include = ["/src", "/LICENSE-*", "/README.md", "/build.rs"]
-rust-version = "1.70" # Bounded by `clap`.
+rust-version = "1.77.0" # `cargo::` in build script.
 
 [features]
 default = []
